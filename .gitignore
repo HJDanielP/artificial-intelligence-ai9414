@@ -10,6 +10,9 @@ venv/
 env/
 ENV/
 
+# Frontend build artefact (built by Vite in CI/dev; shipped in the wheel)
+src/ai9414/frontend/web/
+
 # Python build and packaging artefacts
 build/
 dist/
