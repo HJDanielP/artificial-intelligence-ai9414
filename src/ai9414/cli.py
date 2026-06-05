@@ -3,26 +3,20 @@
 from __future__ import annotations
 
 import argparse
-import difflib
+import socket
 import sys
-from collections.abc import Callable, Sequence
-from dataclasses import dataclass
+from collections.abc import Sequence
 from typing import TextIO
 
-from ai9414.core import AI9414Error, AppLauncher, BaseEducationalApp
+from ai9414.core import AI9414Error, AppLauncher
+from ai9414.core.registry import (
+    DemoSpec,
+    demo_example_names,
+    demo_specs,
+    resolve_demo_spec,
+)
 
-
-@dataclass(frozen=True)
-class DemoSpec:
-    """Describe one installed demo entry."""
-
-    name: str
-    title: str
-    description: str
-    default_example: str
-    factory: Callable[[], BaseEducationalApp]
-    aliases: tuple[str, ...] = ()
-    example_names: Callable[[], Sequence[str]] | None = None
+__all__ = ["DemoSpec", "demo_specs", "resolve_demo_spec", "build_parser", "main"]
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -42,6 +36,31 @@ def build_parser() -> argparse.ArgumentParser:
         "--examples",
         metavar="DEMO",
         help="Show the curated example names for one demo.",
+    )
+
+    serve_parser = subparsers.add_parser(
+        "serve",
+        help="Launch all demos together in one local browser app.",
+    )
+    serve_parser.add_argument(
+        "--host",
+        default="127.0.0.1",
+        help="Host interface to bind the local server to.",
+    )
+    serve_parser.add_argument(
+        "--port",
+        type=int,
+        help="Port for the local server. Defaults to 9414 (or a free port).",
+    )
+    serve_parser.add_argument(
+        "--no-browser",
+        action="store_true",
+        help="Start the server without opening a browser window automatically.",
+    )
+    serve_parser.add_argument(
+        "--solver",
+        metavar="PATH",
+        help="Preload a student solver .py file for the live 'Solve' workflow.",
     )
 
     demo_parser = subparsers.add_parser(
@@ -76,6 +95,11 @@ def build_parser() -> argparse.ArgumentParser:
         action="store_true",
         help="Start the local server without opening a browser window automatically.",
     )
+    demo_parser.add_argument(
+        "--solver",
+        metavar="PATH",
+        help="Preload a student solver .py file for the live 'Solve' workflow.",
+    )
 
     return parser
 
@@ -92,6 +116,8 @@ def main(argv: Sequence[str] | None = None) -> int:
             return 0
         if args.command == "list":
             return _run_list_command(args)
+        if args.command == "serve":
+            return _run_serve_command(args)
         if args.command == "demo":
             return _run_demo_command(args)
     except AI9414Error as exc:
@@ -106,7 +132,7 @@ def _run_list_command(args: argparse.Namespace) -> int:
     if args.examples:
         spec = resolve_demo_spec(args.examples)
         print(f"{spec.name} examples:")
-        for example_name in _demo_example_names(spec):
+        for example_name in demo_example_names(spec):
             print(f"- {example_name}")
         return 0
 
@@ -120,8 +146,28 @@ def _run_list_command(args: argparse.Namespace) -> int:
             f"(default example: {spec.default_example}{alias_text})"
         )
     print()
-    print("Start one with: ai9414 demo <name>")
+    print("Start everything with: ai9414 serve")
+    print("Start one demo with: ai9414 demo <name>")
     print("Show example names with: ai9414 list --examples <name>")
+    return 0
+
+
+def _run_serve_command(args: argparse.Namespace) -> int:
+    from ai9414.core import solve as solve_module
+    from ai9414.core.server import create_app
+
+    if getattr(args, "solver", None):
+        solve_module.set_preloaded_solver(args.solver)
+
+    port = args.port if args.port is not None else _preferred_serve_port(args.host)
+    launcher = AppLauncher(
+        None,
+        host=args.host,
+        port=port,
+        open_browser=not args.no_browser,
+        fastapi_app=create_app(),
+    )
+    launcher.start()
     return 0
 
 
@@ -134,6 +180,11 @@ def _run_demo_command(args: argparse.Namespace) -> int:
     elif args.example:
         app.load_example(args.example)
 
+    if getattr(args, "solver", None):
+        from ai9414.core import solve as solve_module
+
+        solve_module.set_preloaded_solver(args.solver)
+
     launcher = AppLauncher(
         app,
         host=args.host,
@@ -144,256 +195,26 @@ def _run_demo_command(args: argparse.Namespace) -> int:
     return 0
 
 
+def _preferred_serve_port(host: str, preferred: int = 9414) -> int:
+    """Use the conventional 9414 port if free, otherwise pick a free one."""
+
+    from ai9414.core.server import find_free_port
+
+    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as sock:
+        sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+        try:
+            sock.bind((host, preferred))
+            return preferred
+        except OSError:
+            return find_free_port(host)
+
+
 def _print_overview(parser: argparse.ArgumentParser, *, file: TextIO | None = None) -> None:
     output = file or sys.stdout
     parser.print_help(file=output)
     print(file=output)
     print("Examples:", file=output)
+    print("  ai9414 serve", file=output)
     print("  ai9414 list", file=output)
     print("  ai9414 demo graph-bnb", file=output)
     print("  python -m ai9414 demo graph-dfs", file=output)
-
-
-def resolve_demo_spec(name: str) -> DemoSpec:
-    """Resolve a canonical or alias demo name."""
-
-    normalised = _normalise_demo_name(name)
-    for spec in demo_specs():
-        if normalised == spec.name:
-            return spec
-        if normalised in spec.aliases:
-            return spec
-
-    suggestions = difflib.get_close_matches(normalised, _known_demo_names(), n=3)
-    hint = ""
-    if suggestions:
-        hint = f" Did you mean: {', '.join(suggestions)}?"
-    raise AI9414Error(
-        code="demo_not_found",
-        message=f"Unknown demo '{name}'. Run 'ai9414 list' to see the available demos.{hint}",
-    )
-
-
-def _known_demo_names() -> list[str]:
-    names: list[str] = []
-    for spec in demo_specs():
-        names.append(spec.name)
-        names.extend(spec.aliases)
-    return names
-
-
-def _normalise_demo_name(name: str) -> str:
-    return str(name).strip().lower().replace("_", "-")
-
-
-def _demo_example_names(spec: DemoSpec) -> list[str]:
-    if spec.example_names is not None:
-        return list(spec.example_names())
-    app = spec.factory()
-    return list(app.list_examples())
-
-
-def demo_specs() -> tuple[DemoSpec, ...]:
-    """Return the installed demo catalogue."""
-
-    return (
-        DemoSpec(
-            name="labyrinth",
-            title="Labyrinth DFS",
-            description="Labyrinth depth-first search",
-            default_example="small",
-            factory=_create_labyrinth_demo,
-        ),
-        DemoSpec(
-            name="delivery",
-            title="Delivery DFS",
-            description="Office delivery depth-first search",
-            default_example="four_rooms",
-            factory=_create_delivery_demo,
-        ),
-        DemoSpec(
-            name="graph-dfs",
-            title="Graph DFS",
-            description="Spatial graph depth-first search",
-            default_example="small",
-            factory=_create_graph_dfs_demo,
-            aliases=("graph_dfs",),
-        ),
-        DemoSpec(
-            name="graph-bfs",
-            title="Graph BFS",
-            description="Spatial graph breadth-first search",
-            default_example="small",
-            factory=_create_graph_bfs_demo,
-            aliases=("graph_bfs",),
-        ),
-        DemoSpec(
-            name="graph-gbfs",
-            title="Graph Greedy Best-First Search",
-            description="Spatial graph greedy best-first search",
-            default_example="small",
-            factory=_create_graph_gbfs_demo,
-            aliases=("graph_gbfs",),
-        ),
-        DemoSpec(
-            name="graph-astar",
-            title="Graph A* Search",
-            description="Spatial graph A* search",
-            default_example="small",
-            factory=_create_graph_astar_demo,
-            aliases=("graph_astar",),
-        ),
-        DemoSpec(
-            name="graph-ucs",
-            title="Graph Uniform-Cost Search",
-            description="Spatial graph uniform-cost search",
-            default_example="small",
-            factory=_create_graph_ucs_demo,
-            aliases=("graph_ucs",),
-        ),
-        DemoSpec(
-            name="graph-bnb",
-            title="Graph Branch-and-Bound Search",
-            description="Spatial graph branch-and-bound search",
-            default_example="small",
-            factory=_create_graph_bnb_demo,
-            aliases=("graph_branch_and_bound", "graph-branch-and-bound"),
-        ),
-        DemoSpec(
-            name="logic-dpll",
-            title="Visual DPLL",
-            description="Propositional logic DPLL",
-            default_example="simple_sat",
-            factory=_create_logic_demo,
-            aliases=("logic_dpll",),
-            example_names=_list_logic_examples,
-        ),
-        DemoSpec(
-            name="uncertainty",
-            title="Belief-State Explorer",
-            description="Reasoning with uncertainty belief-state explorer",
-            default_example="office_localisation_basic",
-            factory=_create_uncertainty_demo,
-        ),
-        DemoSpec(
-            name="foundation-models",
-            title="Tokenisation Explorer",
-            description="Foundation models tokenisation explorer",
-            default_example="simple_sentence",
-            factory=_create_foundation_models_demo,
-            aliases=("foundation_models",),
-        ),
-        DemoSpec(
-            name="csp-map",
-            title="CSP Map Colouring",
-            description="CSP map colouring",
-            default_example="australia",
-            factory=_create_csp_demo,
-            aliases=("csp", "csp_map"),
-        ),
-        DemoSpec(
-            name="csp-delivery",
-            title="CSP Delivery Scheduling",
-            description="CSP delivery time-slot assignment",
-            default_example="weekday_schedule",
-            factory=_create_delivery_csp_demo,
-            aliases=("delivery_csp", "csp_delivery"),
-        ),
-        DemoSpec(
-            name="strips",
-            title="STRIPS Planning",
-            description="STRIPS planning",
-            default_example="canonical_delivery",
-            factory=_create_strips_demo,
-        ),
-    )
-
-
-def _create_labyrinth_demo() -> BaseEducationalApp:
-    from ai9414.labyrinth import LabyrinthDemo
-
-    return LabyrinthDemo()
-
-
-def _create_delivery_demo() -> BaseEducationalApp:
-    from ai9414.delivery import DeliveryDemo
-
-    return DeliveryDemo()
-
-
-def _create_graph_dfs_demo() -> BaseEducationalApp:
-    from ai9414.graph_dfs import GraphDfsDemo
-
-    return GraphDfsDemo()
-
-
-def _create_graph_bfs_demo() -> BaseEducationalApp:
-    from ai9414.graph_bfs import GraphBfsDemo
-
-    return GraphBfsDemo()
-
-
-def _create_graph_gbfs_demo() -> BaseEducationalApp:
-    from ai9414.graph_gbfs import GraphGbfsDemo
-
-    return GraphGbfsDemo()
-
-
-def _create_graph_astar_demo() -> BaseEducationalApp:
-    from ai9414.graph_astar import GraphAStarDemo
-
-    return GraphAStarDemo()
-
-
-def _create_graph_ucs_demo() -> BaseEducationalApp:
-    from ai9414.graph_ucs import GraphUcsDemo
-
-    return GraphUcsDemo()
-
-
-def _create_graph_bnb_demo() -> BaseEducationalApp:
-    from ai9414.search import SearchDemo
-
-    return SearchDemo()
-
-
-def _create_logic_demo() -> BaseEducationalApp:
-    from ai9414.logic import DpllDemo
-
-    return DpllDemo()
-
-
-def _create_uncertainty_demo() -> BaseEducationalApp:
-    from ai9414.uncertainty import BeliefStateExplorer
-
-    return BeliefStateExplorer()
-
-
-def _create_foundation_models_demo() -> BaseEducationalApp:
-    from ai9414.foundation_models import TokenisationExplorer
-
-    return TokenisationExplorer()
-
-
-def _create_csp_demo() -> BaseEducationalApp:
-    from ai9414.csp import CSPDemo
-
-    return CSPDemo()
-
-
-def _create_delivery_csp_demo() -> BaseEducationalApp:
-    from ai9414.delivery_csp import DeliveryCSPDemo
-
-    return DeliveryCSPDemo()
-
-
-def _create_strips_demo() -> BaseEducationalApp:
-    from ai9414.strips import StripsDemo
-
-    return StripsDemo()
-
-
-def _list_logic_examples() -> Sequence[str]:
-    from ai9414.logic.examples import build_examples
-
-    return list(build_examples())

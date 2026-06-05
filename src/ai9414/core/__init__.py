@@ -13,7 +13,14 @@ from ai9414.core.models import (
     TraceBundle,
     TraceStep,
 )
-from ai9414.core.server import AppLauncher, create_fastapi_app, launch_app
+from ai9414.core.registry import get_demo, list_demos
+from ai9414.core.server import (
+    AppLauncher,
+    create_app,
+    create_fastapi_app,
+    launch_app,
+    launch_unified,
+)
 
 __all__ = [
     "AI9414Error",
@@ -28,8 +35,12 @@ __all__ = [
     "StructuredError",
     "TraceBundle",
     "TraceStep",
+    "create_app",
     "create_fastapi_app",
+    "get_demo",
     "launch_app",
+    "launch_unified",
+    "list_demos",
     "load_json_config",
 ]
 

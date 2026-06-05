@@ -24,10 +24,41 @@ from ai9414.core.models import (
 )
 
 
+def _is_keyed_node_list(value: Any) -> bool:
+    """True for a non-empty list of dicts that each carry a ``tree_id``.
+
+    The search tree's ``tree.nodes`` is delta-encoded (only new/changed nodes per
+    step), so such lists must be merged by key rather than replaced wholesale.
+    """
+    return (
+        isinstance(value, list)
+        and len(value) > 0
+        and all(isinstance(item, dict) and "tree_id" in item for item in value)
+    )
+
+
+def _merge_keyed_node_list(
+    base: list[dict[str, Any]], patch: list[dict[str, Any]]
+) -> list[dict[str, Any]]:
+    """Merge a delta of keyed nodes: replace existing ``tree_id``s, append new."""
+    index_of = {item["tree_id"]: position for position, item in enumerate(base)}
+    result = list(base)
+    for item in patch:
+        position = index_of.get(item["tree_id"])
+        if position is None:
+            index_of[item["tree_id"]] = len(result)
+            result.append(copy.deepcopy(item))
+        else:
+            result[position] = copy.deepcopy(item)
+    return result
+
+
 def _deep_merge(base: dict[str, Any], patch: dict[str, Any]) -> dict[str, Any]:
     for key, value in patch.items():
         if isinstance(value, dict) and isinstance(base.get(key), dict):
             _deep_merge(base[key], value)
+        elif _is_keyed_node_list(value) and _is_keyed_node_list(base.get(key)):
+            base[key] = _merge_keyed_node_list(base[key], value)
         else:
             base[key] = copy.deepcopy(value)
     return base
