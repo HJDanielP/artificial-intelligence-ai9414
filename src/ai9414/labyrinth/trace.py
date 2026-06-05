@@ -139,6 +139,201 @@ def build_labyrinth_trace_from_definition(
     )
 
 
+def build_labyrinth_trace_from_result(
+    labyrinth: dict[str, Any],
+    result: dict[str, Any],
+    *,
+    app_type: str = "labyrinth",
+) -> TraceBundle:
+    """Convert a student grid-DFS result (cells + stack) into a TraceBundle.
+
+    Shared by the labyrinth and delivery demos. Ported from the former JS
+    ``buildLabyrinthTraceFromBackend``.
+    """
+
+    lab = LabyrinthDefinition.model_validate(labyrinth)
+    delivery = app_type == "delivery"
+    start = list(lab.start)
+    key = lambda c: f"{c[0]},{c[1]}"
+
+    tree_nodes: dict[str, dict[str, Any]] = {}
+    visible: list[str] = []
+    tree_id_by_cell: dict[str, str] = {}
+    dead_ends: list[list[int]] = []
+    dead_end_set: set[str] = set()
+    visited_order: list[list[int]] = [list(start)]
+    active_tree_path: list[str] = ["t0"]
+    current_route: list[list[int]] = [list(start)]
+    current_tree_id: str | None = "t0"
+    final_path: list[list[int]] = []
+    status = "searching"
+    counter = 1
+
+    tree_nodes["t0"] = {
+        "tree_id": "t0", "graph_node": f"({start[0]},{start[1]})", "cell": list(start),
+        "parent": None, "depth": 0, "path_cost": 0, "status": "active", "order": 0, "x": 0.5, "y": 0.12,
+    }
+    visible.append("t0")
+    tree_id_by_cell[key(start)] = "t0"
+
+    def set_active(route: list[list[int]]) -> None:
+        active_tree_path.clear()
+        for cell in route:
+            tid = tree_id_by_cell.get(key(cell))
+            if tid:
+                active_tree_path.append(tid)
+
+    def snapshot() -> dict[str, Any]:
+        return {
+            "tree": {"nodes": [copy.deepcopy(tree_nodes[t]) for t in visible]},
+            "search": {
+                "active_tree_node": current_tree_id,
+                "active_tree_path": list(active_tree_path),
+                "current_route": [list(c) for c in current_route],
+                "visited_order": [list(c) for c in visited_order],
+                "dead_end_cells": [list(c) for c in dead_ends],
+                "final_path": [list(c) for c in final_path],
+                "explored_count": len(visited_order),
+                "current_depth": max(len(current_route) - 1, 0),
+                "status": status,
+                "found": bool(final_path),
+            },
+        }
+
+    raw_steps: list[dict[str, Any]] = []
+    for step in result.get("trace", []):
+        action = step.get("action")
+        cell = list(step.get("cell")) if isinstance(step.get("cell"), list) else None
+        parent = list(step.get("parent")) if isinstance(step.get("parent"), list) else None
+        stack = [list(c) for c in (step.get("stack") or [])]
+        depth = int(step.get("depth") or 0)
+
+        if action == "start":
+            current_route = stack or [list(start)]
+            status = "searching"
+        elif action == "expand":
+            parent_id = tree_id_by_cell.get(key(parent)) if parent else None
+            tid = f"t{counter}"; counter += 1
+            tree_nodes[tid] = {
+                "tree_id": tid, "graph_node": f"({cell[0]},{cell[1]})", "cell": cell,
+                "parent": parent_id, "depth": depth, "path_cost": depth,
+                "status": "active", "order": len(visible), "x": 0.0, "y": 0.0,
+            }
+            visible.append(tid)
+            tree_id_by_cell[key(cell)] = tid
+            current_route = stack
+            if not any(key(c) == key(cell) for c in visited_order):
+                visited_order.append(cell)
+            set_active(current_route)
+            current_tree_id = tid
+            if parent_id and parent_id in tree_nodes:
+                tree_nodes[parent_id]["status"] = "expanded"
+            status = "searching"
+        elif action == "backtrack":
+            current_route = stack
+            set_active(current_route)
+            bt = tree_id_by_cell.get(key(cell)) if cell else None
+            if bt and bt in tree_nodes:
+                tree_nodes[bt]["status"] = "backtracked"
+            if cell and key(cell) not in dead_end_set:
+                dead_end_set.add(key(cell)); dead_ends.append(cell)
+            current_tree_id = active_tree_path[-1] if active_tree_path else "t0"
+            if current_tree_id in tree_nodes:
+                tree_nodes[current_tree_id]["status"] = "active"
+            status = "backtracking"
+        elif action == "found":
+            if cell and key(cell) not in tree_id_by_cell:
+                parent_id = tree_id_by_cell.get(key(parent)) if parent else None
+                tid = f"t{counter}"; counter += 1
+                tree_nodes[tid] = {
+                    "tree_id": tid, "graph_node": f"({cell[0]},{cell[1]})", "cell": cell,
+                    "parent": parent_id, "depth": depth, "path_cost": depth,
+                    "status": "final", "order": len(visible), "x": 0.0, "y": 0.0,
+                }
+                visible.append(tid)
+                tree_id_by_cell[key(cell)] = tid
+            current_route = stack
+            final_path = [list(c) for c in stack]
+            active_tree_path.clear()
+            for c in current_route:
+                tid = tree_id_by_cell.get(key(c))
+                if tid:
+                    active_tree_path.append(tid)
+                    tree_nodes[tid]["status"] = "final"
+            current_tree_id = active_tree_path[-1] if active_tree_path else current_tree_id
+            status = "delivery found" if delivery else "exit found"
+        elif action == "fail":
+            current_route = []
+            active_tree_path.clear()
+            current_tree_id = None
+            status = "no route" if delivery else "no path"
+
+        label = _lab_label(action, cell, delivery)
+        raw_steps.append({
+            "event_type": action, "label": label,
+            "annotation": _lab_annotation(action, cell, delivery),
+            "teaching_note": _lab_note(action, delivery),
+            "snapshot": snapshot(),
+        })
+
+    base = solve_labyrinth(lab)
+    layout = _layout_tree([tree_nodes[t] for t in visible])
+    initial_state = copy.deepcopy(base.initial_state)
+    initial_state["example_title"] = "Live Python delivery" if delivery else "Live Python labyrinth"
+    initial_state["example_subtitle"] = "Trace returned by your Python DFS solver."
+    for node in initial_state["tree"]["nodes"]:
+        if node["tree_id"] in layout:
+            node["x"], node["y"] = layout[node["tree_id"]]
+
+    steps: list[TraceStep] = []
+    for index, entry in enumerate(raw_steps):
+        snap = copy.deepcopy(entry["snapshot"])
+        for node in snap["tree"]["nodes"]:
+            if node["tree_id"] in layout:
+                node["x"], node["y"] = layout[node["tree_id"]]
+        steps.append(TraceStep(
+            index=index, event_type=entry["event_type"] or "update", label=entry["label"],
+            annotation=entry["annotation"], teaching_note=entry["teaching_note"], state_patch=snap,
+        ))
+
+    return TraceBundle(
+        app_type=app_type, trace_id=f"{app_type}-live", is_complete=True,
+        initial_state=initial_state,
+        summary=TraceSummary(step_count=len(steps), result=result.get("status", "found")),
+        steps=steps,
+    )
+
+
+def _lab_label(action, cell, delivery):
+    if action == "start":
+        return "Start DFS"
+    if action == "expand":
+        return f"{'Move to' if delivery else 'Expand'} ({cell[0]},{cell[1]})"
+    if action == "backtrack":
+        return f"Backtrack from ({cell[0]},{cell[1]})"
+    if action == "found":
+        return "Delivery location found" if delivery else "Exit found"
+    return "No delivery route found" if delivery else "No path found"
+
+
+def _lab_annotation(action, cell, delivery):
+    if action == "start":
+        return "The office is ready. DFS starts at the robot." if delivery else "The maze is ready. DFS starts at the entrance."
+    if action == "expand":
+        return f"DFS steps into ({cell[0]},{cell[1]}) and keeps exploring."
+    if action == "backtrack":
+        return f"DFS retreats from ({cell[0]},{cell[1]}) after exhausting that branch."
+    if action == "found":
+        return "DFS reached the goal; the successful route is highlighted."
+    return "DFS exhausted the reachable grid without reaching the goal."
+
+
+def _lab_note(action, delivery):
+    if action == "found":
+        return "Plain DFS stops as soon as it finds any route."
+    return "The tree shows search history; the grid shows spatial movement."
+
+
 def build_labyrinth_trace(example: LabyrinthExample) -> TraceBundle:
     return build_labyrinth_trace_from_definition(
         example.labyrinth,

@@ -123,11 +123,31 @@ def build_search_trace_from_definition(
     for node in initial_state["tree"]["nodes"]:
         node["x"], node["y"] = layout[node["tree_id"]]
 
+    # Delta-encode tree.nodes. Each raw snapshot repeats the FULL cumulative
+    # search tree, which is O(n^2) data across the trace (~158 MB for the default
+    # branch-and-bound example with ~2000 steps). The tree only ever grows or
+    # changes node status, so we emit just the new/changed nodes per step. The
+    # frontend (and backend) fold patches with a keyed merge on tree_id, so
+    # unchanged nodes persist from earlier steps. The small `search`/`stats`
+    # sections stay full per step.
     steps: list[TraceStep] = []
+    previous_nodes: dict[str, dict[str, Any]] = {}
     for index, raw_step in enumerate(result.raw_steps):
         snapshot = copy.deepcopy(raw_step.snapshot)
-        for node in snapshot["tree"]["nodes"]:
+        full_nodes = snapshot["tree"]["nodes"]
+        for node in full_nodes:
             node["x"], node["y"] = layout[node["tree_id"]]
+        changed_nodes = [
+            node for node in full_nodes if previous_nodes.get(node["tree_id"]) != node
+        ]
+        for node in full_nodes:
+            previous_nodes[node["tree_id"]] = node
+        if changed_nodes:
+            snapshot["tree"]["nodes"] = changed_nodes
+        else:
+            # Nothing changed in the tree this step; omit it so the keyed merge
+            # leaves earlier nodes intact (an empty list would replace them).
+            del snapshot["tree"]
         steps.append(
             TraceStep(
                 index=index,
