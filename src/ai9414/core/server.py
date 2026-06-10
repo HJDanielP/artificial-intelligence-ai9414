@@ -28,6 +28,7 @@ from fastapi.responses import HTMLResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 
 from ai9414.core import solve as solve_module
+from ai9414.core import workspace as workspace_module
 from ai9414.core.errors import AI9414Error
 from ai9414.core.registry import get_demo, list_demos, resolve_demo_spec
 
@@ -122,6 +123,15 @@ def _handle_stub(demo_name: str) -> JSONResponse:
         return JSONResponse(exc.to_payload(), status_code=400)
 
 
+def _handle_draft_get(demo_name: str) -> JSONResponse:
+    return JSONResponse(workspace_module.read_draft(demo_name))
+
+
+def _handle_draft_post(demo_name: str, request: dict[str, Any]) -> JSONResponse:
+    code = request.get("code", "")
+    return JSONResponse(workspace_module.write_draft(demo_name, code))
+
+
 # --- Single-demo app (tests, `ai9414 demo X`) --------------------------------
 
 
@@ -162,6 +172,14 @@ def create_fastapi_app(app_instance: Any) -> FastAPI:
     @api.get("/api/stub")
     def stub() -> JSONResponse:
         return _handle_stub(demo_name)
+
+    @api.get("/api/draft")
+    def draft_get() -> JSONResponse:
+        return _handle_draft_get(demo_name)
+
+    @api.post("/api/draft")
+    def draft_post(request: dict[str, Any]) -> JSONResponse:
+        return _handle_draft_post(demo_name, request)
 
     @api.post("/api/action")
     def action(request: dict[str, Any]) -> JSONResponse:
@@ -235,6 +253,16 @@ def create_app() -> FastAPI:
     def stub(demo: str) -> JSONResponse:
         _resolve_or_404(demo)
         return _handle_stub(resolve_demo_spec(demo).name)
+
+    @api.get("/api/{demo}/draft")
+    def draft_get(demo: str) -> JSONResponse:
+        _resolve_or_404(demo)
+        return _handle_draft_get(resolve_demo_spec(demo).name)
+
+    @api.post("/api/{demo}/draft")
+    def draft_post(demo: str, request: dict[str, Any]) -> JSONResponse:
+        _resolve_or_404(demo)
+        return _handle_draft_post(resolve_demo_spec(demo).name, request)
 
     @api.post("/api/{demo}/action")
     def action(demo: str, request: dict[str, Any]) -> JSONResponse:

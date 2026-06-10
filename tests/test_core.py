@@ -1,6 +1,7 @@
 import math
 from pathlib import Path
 
+from ai9414.core import workspace as workspace_module
 from ai9414.core.server import AppLauncher, find_free_port
 from ai9414.search.examples import build_examples
 from ai9414.search.trace import build_search_trace
@@ -23,6 +24,20 @@ def test_frontend_assets_are_not_cached(precomputed_client):
     response = precomputed_client.get("/assets/app.js")
     assert response.status_code == 200
     assert response.headers["cache-control"] == "no-store"
+
+
+def test_draft_round_trips_to_workspace(precomputed_client, tmp_path):
+    workspace_module.set_workspace_dir(tmp_path)
+    try:
+        assert precomputed_client.get("/api/draft").json()["code"] == ""
+
+        saved = precomputed_client.post("/api/draft", json={"code": "print('hi')"}).json()
+        assert saved["ok"] is True
+        assert (tmp_path / "solve_search.py").read_text(encoding="utf-8") == "print('hi')"
+
+        assert precomputed_client.get("/api/draft").json()["code"] == "print('hi')"
+    finally:
+        workspace_module.set_workspace_dir(None)
 
 
 def test_manifest_route(precomputed_client):

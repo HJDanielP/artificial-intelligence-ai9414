@@ -62,6 +62,11 @@ def build_parser() -> argparse.ArgumentParser:
         metavar="PATH",
         help="Preload a student solver .py file for the live 'Solve' workflow.",
     )
+    serve_parser.add_argument(
+        "--workspace",
+        metavar="DIR",
+        help="Directory for saved solver drafts (default ./ai9414-solutions).",
+    )
 
     demo_parser = subparsers.add_parser(
         "demo",
@@ -154,10 +159,13 @@ def _run_list_command(args: argparse.Namespace) -> int:
 
 def _run_serve_command(args: argparse.Namespace) -> int:
     from ai9414.core import solve as solve_module
+    from ai9414.core import workspace as workspace_module
     from ai9414.core.server import create_app
 
     if getattr(args, "solver", None):
         solve_module.set_preloaded_solver(args.solver)
+    if getattr(args, "workspace", None):
+        workspace_module.set_workspace_dir(args.workspace)
 
     port = args.port if args.port is not None else _preferred_serve_port(args.host)
     launcher = AppLauncher(
