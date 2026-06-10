@@ -1,5 +1,6 @@
 <script>
   import { edgeId, pathToEdgeIds } from "../lib/util.js";
+  import { panzoom } from "../lib/panzoom.js";
 
   /** @type {{ data: any, cfg?: any }} */
   let { data, cfg = {} } = $props();
@@ -7,6 +8,8 @@
 
   const W = 1000;
   const H = 700;
+
+  let controls = $state(/** @type {any} */ (null));
 
   let graph = $derived(data?.graph || null);
   let search = $derived(data?.search || {});
@@ -48,7 +51,15 @@
 </script>
 
 {#if graph}
-  <svg viewBox="0 0 {W} {H}" class="canvas" role="img" aria-label="Problem graph">
+  <div class="viz">
+  <svg
+    viewBox="0 0 {W} {H}"
+    class="canvas"
+    role="img"
+    aria-label="Problem graph"
+    use:panzoom={{ onInit: (api) => (controls = api) }}
+  >
+    <g data-zoom-layer>
     <g>
       {#each graph.edges as edge}
         {@const a = nodeMap.get(edge.u)}
@@ -85,15 +96,53 @@
         </g>
       {/each}
     </g>
+    </g>
   </svg>
+  <div class="zoom-controls">
+    <button class="icon-btn" onclick={() => controls?.zoomIn()} title="Zoom in" aria-label="Zoom in">+</button>
+    <button class="icon-btn" onclick={() => controls?.zoomOut()} title="Zoom out" aria-label="Zoom out">−</button>
+    <button class="icon-btn fit" onclick={() => controls?.reset()} title="Fit to view" aria-label="Fit to view">Fit</button>
+  </div>
+  </div>
 {/if}
 
 <style>
+  .viz {
+    position: relative;
+  }
   .canvas {
     display: block;
     width: 100%;
     aspect-ratio: 10 / 7;
     max-height: 58vh;
+    cursor: grab;
+    touch-action: none;
+  }
+  .canvas.is-grabbing {
+    cursor: grabbing;
+  }
+  .zoom-controls {
+    position: absolute;
+    top: 8px;
+    right: 8px;
+    display: flex;
+    gap: 4px;
+  }
+  .zoom-controls .icon-btn {
+    width: 28px;
+    height: 28px;
+    font-size: 16px;
+    line-height: 1;
+    background: var(--surface);
+    border: 1px solid var(--line);
+    border-radius: 6px;
+    color: var(--ink);
+    box-shadow: var(--shadow);
+  }
+  .zoom-controls .icon-btn.fit {
+    width: auto;
+    padding: 0 8px;
+    font-size: 12px;
   }
   .graph-edge {
     fill: none;
