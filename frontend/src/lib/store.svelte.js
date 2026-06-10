@@ -204,6 +204,68 @@ export async function loadStub() {
   return payload.code || "";
 }
 
+// --- Solver draft persistence -----------------------------------------------
+// Three layers: localStorage autosaves every keystroke (instant refresh/switch
+// safety), the on-disk workspace holds a real solve_<demo>.py (submittable,
+// loadable via `--solver`), and the stub is the fallback for a fresh demo.
+
+/** @param {string} demo */
+function draftKey(demo) {
+  return `ai9414.draft.${demo}`;
+}
+
+/** Read the per-demo localStorage draft, or null if none. */
+function readLocalDraft(demo) {
+  try {
+    return localStorage.getItem(draftKey(demo));
+  } catch {
+    return null;
+  }
+}
+
+/** Autosave the current editor contents for the active demo. @param {string} code */
+export function saveLocalDraft(code) {
+  if (!store.currentDemo) return;
+  try {
+    localStorage.setItem(draftKey(store.currentDemo), code);
+  } catch {
+    /* localStorage may be unavailable (private mode); autosave is best-effort. */
+  }
+}
+
+/** Drop the saved draft so Reset restores the pristine stub. */
+export function clearLocalDraft() {
+  if (!store.currentDemo) return;
+  try {
+    localStorage.removeItem(draftKey(store.currentDemo));
+  } catch {
+    /* best-effort */
+  }
+}
+
+/**
+ * Resolve the code to show when the editor (re)loads a demo.
+ * Precedence: in-browser autosave > on-disk workspace draft > starter stub.
+ */
+export async function loadInitialCode() {
+  const demo = store.currentDemo;
+  const local = readLocalDraft(demo);
+  if (local != null) return local;
+  try {
+    const payload = await api.getDraft(demo);
+    if (payload.code) return payload.code;
+  } catch {
+    /* no workspace draft yet — fall through to the stub. */
+  }
+  return loadStub();
+}
+
+/** Write the current editor contents to the on-disk workspace. @param {string} code */
+export async function saveDraftToDisk(code) {
+  if (!store.currentDemo) return;
+  await api.postDraft(store.currentDemo, code);
+}
+
 /**
  * Run student code in-process and replay the returned trace.
  * @param {string} code
@@ -222,6 +284,8 @@ export async function runSolver(code) {
     const payload = await api.postSolve(store.currentDemo, body);
     _setTrace(payload.trace);
     store.mode = "live";
+    // A run that reaches the solver is worth persisting to the real file too.
+    saveDraftToDisk(code).catch(() => {});
     const steps = payload.trace?.summary?.step_count ?? 0;
     store.solverOutput = {
       status: "ok",

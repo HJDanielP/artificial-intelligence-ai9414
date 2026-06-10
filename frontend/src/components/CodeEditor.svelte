@@ -3,6 +3,10 @@
   import {
     store,
     loadStub,
+    loadInitialCode,
+    saveLocalDraft,
+    clearLocalDraft,
+    saveDraftToDisk,
     runSolver,
     backToPlayback,
     resetSolverOutput,
@@ -15,7 +19,11 @@
   let view = null;
   let ready = $state(false);
   let busy = $state(false);
+  let saved = $state(false);
   let lastDemo = store.currentDemo;
+  let fileInput = $state(/** @type {HTMLInputElement|null} */ (null));
+  let saveTimer = /** @type {ReturnType<typeof setTimeout>|null} */ (null);
+  let savedTimer = /** @type {ReturnType<typeof setTimeout>|null} */ (null);
 
   let output = $derived(store.solverOutput);
 
@@ -45,14 +53,28 @@
     window.addEventListener("mouseup", up);
   }
 
-  async function replaceWithStub() {
+  function setDoc(code) {
+    if (view) view.dispatch({ changes: { from: 0, to: view.state.doc.length, insert: code } });
+  }
+
+  // Load saved draft (localStorage > on-disk workspace) or fall back to the stub.
+  async function loadCode() {
     let code = "";
     try {
-      code = await loadStub();
+      code = await loadInitialCode();
     } catch (err) {
       code = `# Could not load starter code: ${err}`;
     }
-    if (view) view.dispatch({ changes: { from: 0, to: view.state.doc.length, insert: code } });
+    setDoc(code);
+  }
+
+  // Debounced autosave to localStorage so switching demos / refreshing never
+  // loses the student's work.
+  function scheduleAutosave() {
+    if (saveTimer) clearTimeout(saveTimer);
+    saveTimer = setTimeout(() => {
+      if (view) saveLocalDraft(view.state.doc.toString());
+    }, 400);
   }
 
   onMount(async () => {
@@ -65,10 +87,16 @@
     view = new EditorView({
       parent: host,
       doc: "",
-      extensions: [basicSetup, python(), keymap.of([indentWithTab])],
+      extensions: [
+        basicSetup,
+        python(),
+        keymap.of([indentWithTab]),
+        EditorView.updateListener.of((u) => {
+          if (u.docChanged) scheduleAutosave();
+        }),
+      ],
     });
-    if (typeof window !== "undefined") window.__ai9414Editor = view;
-    await replaceWithStub();
+    await loadCode();
     ready = true;
   });
 
@@ -76,12 +104,17 @@
     const demo = store.currentDemo;
     if (ready && view && demo !== lastDemo) {
       lastDemo = demo;
+      if (saveTimer) clearTimeout(saveTimer); // don't save old code under new demo's key
       resetSolverOutput();
-      replaceWithStub();
+      loadCode();
     }
   });
 
-  onDestroy(() => view?.destroy());
+  onDestroy(() => {
+    if (saveTimer) clearTimeout(saveTimer);
+    if (savedTimer) clearTimeout(savedTimer);
+    view?.destroy();
+  });
 
   async function onRun() {
     if (!view) return;
@@ -93,9 +126,48 @@
     }
   }
 
+  // Reset = discard my edits and restore the pristine starter code.
   async function onReload() {
+    if (saveTimer) clearTimeout(saveTimer);
+    clearLocalDraft();
     resetSolverOutput();
-    await replaceWithStub();
+    setDoc(await loadStub());
+  }
+
+  function flashSaved() {
+    saved = true;
+    if (savedTimer) clearTimeout(savedTimer);
+    savedTimer = setTimeout(() => (saved = false), 1500);
+  }
+
+  async function onSave() {
+    if (!view) return;
+    try {
+      await saveDraftToDisk(view.state.doc.toString());
+      flashSaved();
+    } catch {
+      /* surfaced elsewhere; keep the toolbar quiet */
+    }
+  }
+
+  function onExport() {
+    if (!view) return;
+    const blob = new Blob([view.state.doc.toString()], { type: "text/x-python" });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    a.href = url;
+    a.download = `solve_${store.currentDemo}.py`;
+    a.click();
+    URL.revokeObjectURL(url);
+  }
+
+  async function onImportFile(event) {
+    const file = event.target.files?.[0];
+    if (!file) return;
+    const text = await file.text();
+    setDoc(text);
+    saveLocalDraft(text);
+    event.target.value = ""; // allow re-importing the same file
   }
 </script>
 
@@ -114,7 +186,19 @@
       {#if store.mode === "live"}
         <button class="sm" onclick={backToPlayback} title="Show the reference example again">Example</button>
       {/if}
-      <button class="sm" onclick={onReload} disabled={!ready} title="Restore the starter code">Reset</button>
+      <input
+        type="file"
+        accept=".py,text/x-python,text/plain"
+        bind:this={fileInput}
+        onchange={onImportFile}
+        hidden
+      />
+      <button class="sm" onclick={() => fileInput?.click()} disabled={!ready} title="Load a .py file into the editor">Import</button>
+      <button class="sm" onclick={onExport} disabled={!ready} title="Download your code as solve_{store.currentDemo}.py">Export</button>
+      <button class="sm" onclick={onSave} disabled={!ready} title="Save to the workspace file on disk">
+        {saved ? "Saved ✓" : "Save"}
+      </button>
+      <button class="sm" onclick={onReload} disabled={!ready} title="Discard your edits and restore the starter code">Reset</button>
       <button class="sm primary" onclick={onRun} disabled={!ready || busy}>
         {busy ? "Running…" : "Run ▶"}
       </button>

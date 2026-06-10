@@ -56,6 +56,23 @@ export function getStub(demo) {
   return requestJson(`/api/${demo}/stub`);
 }
 
+/** Read the on-disk solver draft saved in the workspace. @param {string} demo */
+export function getDraft(demo) {
+  return requestJson(`/api/${demo}/draft`);
+}
+
+/**
+ * Persist the solver draft to the on-disk workspace (solve_<demo>.py).
+ * @param {string} demo
+ * @param {string} code
+ */
+export function postDraft(demo, code) {
+  return requestJson(`/api/${demo}/draft`, {
+    method: "POST",
+    body: JSON.stringify({ code }),
+  });
+}
+
 /**
  * @param {string} demo
  * @param {string} action
